@@ -114,48 +114,33 @@ public class Main implements Callable<Integer> {
             toolList = readOnly ? ToolFactory.createReadOnlyTools() : ToolFactory.createAllTools();
         }
 
-        // Build service config
+        // Build QueryEngine config
         String modelName = getModelName(model);
         String systemPrompt = buildSystemPrompt(toolList);
 
-        ClaudeCodeService.ClaudeCodeConfig config = ClaudeCodeService.ClaudeCodeConfig.builder()
+        @SuppressWarnings("unchecked")
+        List<Tool> tools = (List<Tool>) (List<?>) toolList;
+
+        QueryEngineConfig queryConfig = QueryEngineConfig.builder()
+                .cwd(cwd)
                 .apiKey(key)
                 .model(modelName)
                 .systemPrompt(systemPrompt)
-                .tools(toolList)
+                .tools(tools)
                 .maxTurns(maxTurns)
-                .maxTokens(4096)
+                .verbose(verbose)
                 .permissionMode(parsePermissionMode(permissionMode))
                 .build();
 
-        // Create service
-        ClaudeCodeService service = new ClaudeCodeService(config);
+        // Create QueryEngine - this is the main agentic loop
+        QueryEngine queryEngine = new QueryEngine(queryConfig);
 
         // Print welcome message
         printWelcome();
 
-        // Create or resume session
-        String sessionId;
-        if (resumeLatest) {
-            sessionId = resumeLatestSession(service);
-            if (sessionId == null) {
-                System.err.println("No previous session found. Starting new session.");
-                sessionId = service.createSession();
-            }
-        } else if (resumeSessionId != null) {
-            sessionId = resumeSessionById(service, resumeSessionId);
-            if (sessionId == null) {
-                System.err.println("Session not found: " + resumeSessionId);
-                System.err.println("Use --resume list to see available sessions.");
-                return 1;
-            }
-        } else {
-            sessionId = service.createSession();
-        }
-
         // Handle initial prompt if provided
         if (initialPrompt != null && !initialPrompt.isEmpty()) {
-            handlePrompt(service, sessionId, initialPrompt, toolList);
+            handlePrompt(queryEngine, initialPrompt);
         }
 
         // Interactive loop
@@ -177,7 +162,6 @@ public class Main implements Callable<Integer> {
             String trimmed = input.trim();
             if (trimmed.equalsIgnoreCase("exit") || trimmed.equalsIgnoreCase("quit")) {
                 System.out.println("Goodbye!");
-                service.endSession(sessionId);
                 return 0;
             }
 
@@ -191,294 +175,92 @@ public class Main implements Callable<Integer> {
                 continue;
             }
 
-            handlePrompt(service, sessionId, input, toolList);
+            handlePrompt(queryEngine, input);
         }
 
-        service.endSession(sessionId);
         return 0;
     }
 
     /**
-     * Handle a single prompt with tool execution loop.
+     * Handle a single prompt using QueryEngine agentic loop.
      */
-    private void handlePrompt(ClaudeCodeService service, String sessionId, String prompt, List<Tool<?, ?, ?>> toolList) {
+    private void handlePrompt(QueryEngine queryEngine, String prompt) {
         System.out.println();
 
         // Execute agentic loop
-        int maxIterations = 20;
-        int iteration = 0;
+        Flux<QueryEvent> eventFlux = queryEngine.executeAgenticLoop(prompt);
 
-        // First iteration: send user prompt
-        Flux<SDKMessage> messages = service.sendMessage(sessionId, prompt);
+        CountDownLatch latch = new CountDownLatch(1);
+        List<String> errors = new ArrayList<>();
 
-        while (iteration < maxIterations) {
-            iteration++;
-
-            // Collect response
-            List<SDKMessage> responseMessages = new ArrayList<>();
-            CountDownLatch latch = new CountDownLatch(1);
-
-            messages.subscribe(
-                responseMessages::add,
-                error -> {
-                    System.err.println("Error: " + error.getMessage());
+        eventFlux.subscribe(
+            event -> {
+                if (event instanceof QueryEvent.RequestStart) {
+                    System.out.println("[Thinking...]");
+                } else if (event instanceof QueryEvent.Message msgEvent) {
+                    printMessage(msgEvent.message());
+                } else if (event instanceof QueryEvent.ToolsExecuting executing) {
+                    System.out.println("\n[Executing " + executing.toolCount() + " tools...]");
+                } else if (event instanceof QueryEvent.ToolsComplete complete) {
                     if (verbose) {
-                        error.printStackTrace();
+                        System.out.println("\n[Tools completed: " + complete.resultCount() + " results]");
                     }
-                    latch.countDown();
-                },
-                latch::countDown
-            );
-
-            try {
-                latch.await(120, java.util.concurrent.TimeUnit.SECONDS);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return;
-            }
-
-            // Find assistant message
-            SDKMessage.Assistant assistantMsg = null;
-            for (SDKMessage msg : responseMessages) {
-                if (msg instanceof SDKMessage.Assistant a) {
-                    assistantMsg = a;
-                    break;
+                } else if (event instanceof QueryEvent.Terminal terminal) {
+                    if (terminal.isError()) {
+                        System.err.println("\n[Error: " + terminal.getReason() + "]");
+                    } else if (verbose) {
+                        System.out.println("\n[Done]");
+                    }
                 }
-            }
-
-            if (assistantMsg == null) {
-                break;
-            }
-
-            // Print text content
-            for (ContentBlock block : assistantMsg.content()) {
-                if (block instanceof ContentBlock.Text t) {
-                    System.out.println(t.text());
-                }
-            }
-
-            // Check for tool calls
-            List<ContentBlock.ToolUse> toolCalls = new ArrayList<>();
-            for (ContentBlock block : assistantMsg.content()) {
-                if (block instanceof ContentBlock.ToolUse tu) {
-                    toolCalls.add(tu);
-                }
-            }
-
-            if (toolCalls.isEmpty()) {
-                // No tool calls, we're done
-                break;
-            }
-
-            // Execute tools and collect results as ContentBlock.ToolResult
-            List<ContentBlock.ToolResult> toolResults = new ArrayList<>();
-            for (ContentBlock.ToolUse toolUse : toolCalls) {
-                System.out.println("\n[Executing tool: " + toolUse.name() + "]");
+            },
+            error -> {
+                System.err.println("\n[Error: " + error.getMessage() + "]");
                 if (verbose) {
-                    System.err.println("[Input: " + toolUse.input() + "]");
+                    error.printStackTrace();
                 }
-
-                String result = executeTool(toolUse.name(), toolUse.id(), toolUse.input(), toolList);
-                System.out.println("[Result: " + truncate(result, 200) + "]");
-
-                // Add tool result as ContentBlock
-                toolResults.add(new ContentBlock.ToolResult(toolUse.id(), result, false));
+                errors.add(error.getMessage());
+                latch.countDown();
+            },
+            () -> {
+                latch.countDown();
             }
+        );
 
-            // Send tool results and continue loop
-            messages = service.sendToolResults(sessionId, toolResults);
-        }
-
-        if (verbose) {
-            System.err.println("\n[Turn completed]");
-        }
-    }
-
-    /**
-     * Execute a tool and return the result.
-     */
-    @SuppressWarnings({"unchecked", "rawtypes"})
-    private String executeTool(String toolName, String toolUseId, Map<String, Object> input, List<Tool<?, ?, ?>> toolList) {
         try {
-            // Find the tool
-            AbstractTool tool = null;
-            if (toolList != null) {
-                for (Tool t : toolList) {
-                    if (t.name().equals(toolName) || t.aliases().contains(toolName)) {
-                        if (t instanceof AbstractTool) {
-                            tool = (AbstractTool) t;
-                        }
-                        break;
-                    }
-                }
+            // Wait for completion with timeout
+            if (!latch.await(300, java.util.concurrent.TimeUnit.SECONDS)) {
+                System.err.println("\n[Timeout: Query took too long]");
+                queryEngine.interrupt();
             }
-
-            if (tool == null) {
-                return "Error: Unknown tool: " + toolName;
-            }
-
-            // Parse input first
-            Object parsedInput = tool.parseInput(input);
-
-            // Check if we need to ask for permission
-            if (!permissionMode.equals("bypass") && !permissionMode.equals("bypass-permissions")) {
-                boolean needConfirm = false;
-                String confirmMessage = null;
-
-                // Check if tool is destructive
-                if (tool.isDestructiveUntyped(parsedInput)) {
-                    needConfirm = true;
-                    confirmMessage = "Tool '" + toolName + "' may make destructive changes. Proceed?";
-                } else if (!tool.isReadOnlyUntyped(parsedInput) && !permissionMode.equals("accept-edits")) {
-                    needConfirm = true;
-                    confirmMessage = "Tool '" + toolName + "' will modify files. Proceed?";
-                }
-
-                if (needConfirm) {
-                    System.out.print("\n[Permission] " + confirmMessage + " (y/n): ");
-                    System.out.flush();
-
-                    Scanner confirmScanner = new Scanner(System.in);
-                    String response = confirmScanner.nextLine().trim().toLowerCase();
-
-                    if (!response.equals("y") && !response.equals("yes")) {
-                        return "Permission denied by user";
-                    }
-                }
-            }
-
-            // Execute the tool
-            java.util.concurrent.CompletableFuture future =
-                tool.executeWithMapInput(input, createToolUseContext(), (t, i, ctx, msg, id) ->
-                    java.util.concurrent.CompletableFuture.completedFuture(
-                        com.anthropic.claudecode.permission.PermissionResult.allow(i)
-                    ), null, progress -> {});
-
-            ToolResult result = (ToolResult) future.get(60, java.util.concurrent.TimeUnit.SECONDS);
-
-            if (result.data() != null) {
-                Object data = result.data();
-                // Handle different output types
-                if (data instanceof String str) {
-                    return str;
-                } else if (data instanceof Map<?, ?> map) {
-                    return formatMapResult(map);
-                } else if (data instanceof List<?> list) {
-                    return formatListResult(list);
-                }
-                // Try to find toResultString method
-                try {
-                    java.lang.reflect.Method method = data.getClass().getMethod("toResultString");
-                    Object methodResult = method.invoke(data);
-                    if (methodResult instanceof String str) {
-                        return str;
-                    }
-                } catch (NoSuchMethodException e) {
-                    // No toResultString method, use toString
-                }
-                return data.toString();
-            }
-            return "Tool completed with no output";
-        } catch (Exception e) {
-            return "Error executing tool: " + e.getMessage();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            queryEngine.interrupt();
         }
     }
 
     /**
-     * Create tool use context.
+     * Print message content to console.
      */
-    private ToolUseContext createToolUseContext() {
-        return ToolUseContext.empty();
-    }
-
-    private String truncate(String s, int max) {
-        if (s == null) return "";
-        return s.length() > max ? s.substring(0, max) + "..." : s;
-    }
-
-    private String formatMapResult(Map<?, ?> map) {
-        StringBuilder sb = new StringBuilder();
-        for (Map.Entry<?, ?> entry : map.entrySet()) {
-            if (sb.length() > 0) sb.append("\n");
-            Object value = entry.getValue();
-            String valueStr;
-            if (value instanceof String str) {
-                valueStr = str;
-            } else if (value instanceof List<?> list) {
-                valueStr = formatListResult(list);
-            } else if (value instanceof Map<?, ?> m) {
-                valueStr = formatMapResult(m);
-            } else {
-                valueStr = String.valueOf(value);
-            }
-            sb.append(entry.getKey()).append(": ").append(valueStr);
-        }
-        return sb.toString();
-    }
-
-    private String formatListResult(List<?> list) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("[").append(list.size()).append(" items]");
-        for (Object item : list) {
-            sb.append("\n  ");
-            if (item instanceof String str) {
-                sb.append(str);
-            } else if (item instanceof Map<?, ?> m) {
-                sb.append(formatMapResult(m).replace("\n", "\n  "));
-            } else {
-                sb.append(String.valueOf(item));
-            }
-        }
-        return sb.toString();
-    }
-
-    /**
-     * Print SDK message to console.
-     */
-    private void printMessage(SDKMessage message) {
-        if (message instanceof SDKMessage.Assistant a) {
-            System.out.println();
-            for (ContentBlock block : a.content()) {
-                printContentBlock(block);
-            }
-        } else if (message instanceof SDKMessage.Result r) {
-            if (r.isError()) {
-                System.err.println("\nError: " + r.result());
-            }
-        } else if (message instanceof SDKMessage.User u) {
-            if (verbose) {
-                System.err.println("[User message received]");
-            }
-        }
-    }
-
-    /**
-     * Print content block.
-     */
-    private void printContentBlock(ContentBlock block) {
-        if (block instanceof ContentBlock.Text t) {
-            System.out.println(t.text());
-        } else if (block instanceof ContentBlock.ToolUse tu) {
-            System.out.println("\n[Tool: " + tu.name() + "]");
-            if (verbose) {
-                System.err.println("[Input: " + tu.input() + "]");
-            }
-        } else if (block instanceof ContentBlock.ToolResult tr) {
-            Object content = tr.content();
-            if (content != null) {
-                String str = content.toString();
-                if (str.length() > 500) {
-                    System.out.println("\n[Tool result: " + str.substring(0, 500) + "...]");
-                } else {
-                    System.out.println("\n[Tool result: " + str + "]");
+    private void printMessage(Object message) {
+        if (message instanceof MessageTypes.AssistantMessage assistant) {
+            List<Map<String, Object>> content = assistant.content();
+            if (content == null) return;
+            for (Map<String, Object> block : content) {
+                String type = (String) block.get("type");
+                if ("text".equals(type)) {
+                    String text = (String) block.get("text");
+                    if (text != null && !text.isEmpty()) {
+                        System.out.println(text);
+                    }
+                } else if ("tool_use".equals(type) && verbose) {
+                    String name = (String) block.get("name");
+                    System.out.println("\n[Tool: " + name + "]");
                 }
             }
-        } else if (block instanceof ContentBlock.Image i) {
-            System.out.println("[Image content]");
-        } else if (block instanceof ContentBlock.Thinking th) {
-            if (verbose) {
-                System.err.println("[Thinking: " + th.thinking() + "]");
-            }
+        } else if (message instanceof MessageTypes.UserMessage user) {
+            // Skip user messages in output
+        } else if (message instanceof MessageTypes.SystemMessage sys) {
+            System.out.println("[System: " + sys.content() + "]");
         }
     }
 
@@ -588,6 +370,11 @@ public class Main implements Callable<Integer> {
                 System.out.println();
             }
         }
+    }
+
+    private String truncate(String s, int max) {
+        if (s == null) return "";
+        return s.length() > max ? s.substring(0, max) + "..." : s;
     }
 
     // Session management methods

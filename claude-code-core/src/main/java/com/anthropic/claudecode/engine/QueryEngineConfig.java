@@ -16,7 +16,7 @@ import java.util.concurrent.CompletableFuture;
  */
 public record QueryEngineConfig(
     String cwd,
-    List<Object> tools,
+    List<Tool> tools,
     List<Object> commands,
     List<Object> mcpClients,
     List<Object> agents,
@@ -27,6 +27,9 @@ public record QueryEngineConfig(
     String appendSystemPrompt,
     String userSpecifiedModel,
     String fallbackModel,
+    String apiKey,
+    String model,
+    String systemPrompt,
     Object thinkingConfig,
     Integer maxTurns,
     Double maxBudgetUsd,
@@ -46,7 +49,7 @@ public record QueryEngineConfig(
 
     public static class Builder {
         private String cwd = System.getProperty("user.dir");
-        private List<Object> tools = List.of();
+        private List<Tool> tools = List.of();
         private List<Object> commands = List.of();
         private List<Object> mcpClients = List.of();
         private List<Object> agents = List.of();
@@ -58,6 +61,9 @@ public record QueryEngineConfig(
         private String appendSystemPrompt;
         private String userSpecifiedModel;
         private String fallbackModel;
+        private String apiKey;
+        private String model = "glm-5";
+        private String systemPrompt;
         private Object thinkingConfig;
         private Integer maxTurns;
         private Double maxBudgetUsd;
@@ -72,7 +78,7 @@ public record QueryEngineConfig(
         private Object attributionState;
 
         public Builder cwd(String cwd) { this.cwd = cwd; return this; }
-        public Builder tools(List<Object> tools) { this.tools = tools; return this; }
+        public Builder tools(List<Tool> tools) { this.tools = tools; return this; }
         public Builder commands(List<Object> commands) { this.commands = commands; return this; }
         public Builder mcpClients(List<Object> mcpClients) { this.mcpClients = mcpClients; return this; }
         public Builder agents(List<Object> agents) { this.agents = agents; return this; }
@@ -83,6 +89,9 @@ public record QueryEngineConfig(
         public Builder appendSystemPrompt(String appendSystemPrompt) { this.appendSystemPrompt = appendSystemPrompt; return this; }
         public Builder userSpecifiedModel(String userSpecifiedModel) { this.userSpecifiedModel = userSpecifiedModel; return this; }
         public Builder fallbackModel(String fallbackModel) { this.fallbackModel = fallbackModel; return this; }
+        public Builder apiKey(String apiKey) { this.apiKey = apiKey; return this; }
+        public Builder model(String model) { this.model = model; return this; }
+        public Builder systemPrompt(String systemPrompt) { this.systemPrompt = systemPrompt; return this; }
         public Builder thinkingConfig(Object thinkingConfig) { this.thinkingConfig = thinkingConfig; return this; }
         public Builder maxTurns(Integer maxTurns) { this.maxTurns = maxTurns; return this; }
         public Builder maxBudgetUsd(Double maxBudgetUsd) { this.maxBudgetUsd = maxBudgetUsd; return this; }
@@ -101,6 +110,7 @@ public record QueryEngineConfig(
                 cwd, tools, commands, mcpClients, agents, canUseTool,
                 initialMessages, readFileCache, customSystemPrompt,
                 appendSystemPrompt, userSpecifiedModel, fallbackModel,
+                apiKey, model, systemPrompt,
                 thinkingConfig, maxTurns, maxBudgetUsd, taskBudget,
                 jsonSchema, verbose, debug, isNonInteractiveSession,
                 permissionMode, prePlanMode, fileHistoryState, attributionState

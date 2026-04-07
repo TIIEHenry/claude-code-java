@@ -106,18 +106,13 @@ class QueryEngineTest {
     }
 
     @Test
-    @DisplayName("QueryEngine submitMessage returns QueryResult")
-    void submitMessageReturnsQueryResult() {
+    @DisplayName("QueryEngine executeAgenticLoop returns Flux")
+    void executeAgenticLoopReturnsFlux() {
         QueryEngine engine = QueryEngine.create("/tmp");
-        QueryEngine.SubmitOptions options = QueryEngine.SubmitOptions.empty();
 
-        CompletableFuture<QueryEngine.QueryResult> future = engine.submitMessage("test prompt", options);
-        QueryEngine.QueryResult result = future.join();
+        reactor.core.publisher.Flux<QueryEvent> flux = engine.executeAgenticLoop("test prompt");
 
-        assertNotNull(result);
-        assertNotNull(result.queryId());
-        assertEquals("test prompt", result.prompt());
-        assertEquals(QueryEngine.QueryStatus.COMPLETED, result.status());
+        assertNotNull(flux);
     }
 
     @Test
@@ -147,99 +142,87 @@ class QueryEngineTest {
     }
 
     @Test
-    @DisplayName("QueryEngine AbortController starts not aborted")
-    void abortControllerStartsNotAborted() {
-        QueryEngine.AbortController controller = new QueryEngine.AbortController();
+    @DisplayName("QueryState initial creates default state")
+    void queryStateInitialCreatesDefaultState() {
+        QueryState state = QueryState.initial(new ArrayList<>(), null);
 
-        assertFalse(controller.isAborted());
+        assertNotNull(state);
+        assertTrue(state.messages().isEmpty());
+        assertEquals(1, state.turnCount());
+        assertNull(state.transition());
     }
 
     @Test
-    @DisplayName("QueryEngine AbortController abort sets aborted")
-    void abortControllerAbortSetsAborted() {
-        QueryEngine.AbortController controller = new QueryEngine.AbortController();
+    @DisplayName("QueryState builder works correctly")
+    void queryStateBuilderWorksCorrectly() {
+        List<Object> messages = new ArrayList<>();
+        messages.add("test");
 
-        controller.abort();
+        QueryState state = QueryState.builder()
+            .messages(messages)
+            .turnCount(5)
+            .build();
 
-        assertTrue(controller.isAborted());
+        assertEquals(1, state.messages().size());
+        assertEquals(5, state.turnCount());
     }
 
     @Test
-    @DisplayName("QueryEngine AbortController listeners are called on abort")
-    void abortControllerListenersAreCalledOnAbort() {
-        QueryEngine.AbortController controller = new QueryEngine.AbortController();
-        List<String> called = new ArrayList<>();
+    @DisplayName("LoopTransition Continue is not terminal")
+    void loopTransitionContinueIsNotTerminal() {
+        LoopTransition.Continue transition = LoopTransition.Continue.toolResults(new ArrayList<>());
 
-        controller.addListener(() -> called.add("listener1"));
-        controller.addListener(() -> called.add("listener2"));
-
-        controller.abort();
-
-        assertEquals(2, called.size());
-        assertTrue(called.contains("listener1"));
-        assertTrue(called.contains("listener2"));
+        assertFalse(transition.isTerminal());
+        assertEquals("tool_results", transition.reason());
     }
 
     @Test
-    @DisplayName("QueryEngine QueryResult record works correctly")
-    void queryResultRecordWorksCorrectly() {
-        QueryEngine.QueryResult result = new QueryEngine.QueryResult(
-            "query-123",
-            "test prompt",
-            QueryEngine.QueryStatus.COMPLETED,
-            "result data"
-        );
+    @DisplayName("LoopTransition Terminal is terminal")
+    void loopTransitionTerminalIsTerminal() {
+        LoopTransition.Terminal terminal = LoopTransition.Terminal.complete("result");
 
-        assertEquals("query-123", result.queryId());
-        assertEquals("test prompt", result.prompt());
-        assertEquals(QueryEngine.QueryStatus.COMPLETED, result.status());
-        assertEquals("result data", result.result());
+        assertTrue(terminal.isTerminal());
+        assertFalse(terminal.isError());
+        assertEquals("complete", terminal.reason());
     }
 
     @Test
-    @DisplayName("QueryEngine QueryStatus enum has correct values")
-    void queryStatusEnumHasCorrectValues() {
-        QueryEngine.QueryStatus[] statuses = QueryEngine.QueryStatus.values();
+    @DisplayName("LoopTransition Terminal error is error")
+    void loopTransitionTerminalErrorIsError() {
+        LoopTransition.Terminal terminal = LoopTransition.Terminal.error("something went wrong");
 
-        assertEquals(5, statuses.length);
-        assertTrue(Arrays.asList(statuses).contains(QueryEngine.QueryStatus.PENDING));
-        assertTrue(Arrays.asList(statuses).contains(QueryEngine.QueryStatus.RUNNING));
-        assertTrue(Arrays.asList(statuses).contains(QueryEngine.QueryStatus.COMPLETED));
-        assertTrue(Arrays.asList(statuses).contains(QueryEngine.QueryStatus.FAILED));
-        assertTrue(Arrays.asList(statuses).contains(QueryEngine.QueryStatus.INTERRUPTED));
+        assertTrue(terminal.isTerminal());
+        assertTrue(terminal.isError());
+        assertEquals("error", terminal.reason());
     }
 
     @Test
-    @DisplayName("QueryEngine SubmitOptions empty creates default options")
-    void submitOptionsEmptyCreatesDefaultOptions() {
-        QueryEngine.SubmitOptions options = QueryEngine.SubmitOptions.empty();
+    @DisplayName("LoopTransition Terminal maxTurnsReached works")
+    void loopTransitionTerminalMaxTurnsReachedWorks() {
+        LoopTransition.Terminal terminal = LoopTransition.Terminal.maxTurnsReached(10);
 
-        assertEquals(PermissionMode.DEFAULT, options.permissionMode());
-        assertFalse(options.verbose());
-        assertNull(options.maxTurns());
+        assertTrue(terminal.isTerminal());
+        assertFalse(terminal.isError());
+        assertTrue(terminal.result().toString().contains("10"));
     }
 
     @Test
-    @DisplayName("QueryEngine SubmitOptions default constructor works")
-    void submitOptionsDefaultConstructorWorks() {
-        QueryEngine.SubmitOptions options = new QueryEngine.SubmitOptions();
+    @DisplayName("QueryEvent types work correctly")
+    void queryEventTypesWorkCorrectly() {
+        QueryEvent.RequestStart start = QueryEvent.RequestStart.instance;
+        QueryEvent.Message msg = new QueryEvent.Message("test");
+        QueryEvent.ToolsExecuting executing = new QueryEvent.ToolsExecuting(3);
+        QueryEvent.ToolsComplete complete = new QueryEvent.ToolsComplete(5);
+        LoopTransition.Terminal terminal = LoopTransition.Terminal.complete("done");
+        QueryEvent.Terminal terminalEvent = new QueryEvent.Terminal(terminal);
 
-        assertEquals(PermissionMode.DEFAULT, options.permissionMode());
-        assertFalse(options.verbose());
-        assertNull(options.maxTurns());
-    }
+        assertEquals("request_start", start.getTypeName());
+        assertEquals("message", msg.getTypeName());
+        assertEquals("tools_executing", executing.getTypeName());
+        assertEquals("tools_complete", complete.getTypeName());
+        assertEquals("terminal", terminalEvent.getTypeName());
 
-    @Test
-    @DisplayName("QueryEngine SubmitOptions with all parameters")
-    void submitOptionsWithAllParameters() {
-        QueryEngine.SubmitOptions options = new QueryEngine.SubmitOptions(
-            PermissionMode.ACCEPT_EDITS,
-            true,
-            10
-        );
-
-        assertEquals(PermissionMode.ACCEPT_EDITS, options.permissionMode());
-        assertTrue(options.verbose());
-        assertEquals(10, options.maxTurns());
+        assertEquals(3, executing.toolCount());
+        assertEquals(5, complete.resultCount());
     }
 }

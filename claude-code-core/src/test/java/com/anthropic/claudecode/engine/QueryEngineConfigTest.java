@@ -43,7 +43,7 @@ class QueryEngineConfigTest {
 
         QueryEngineConfig config = QueryEngineConfig.builder()
             .cwd("/custom")
-            .tools(List.of("tool1"))
+            .tools(Collections.emptyList())
             .commands(List.of("cmd1"))
             .mcpClients(List.of("client1"))
             .agents(List.of("agent1"))
@@ -53,6 +53,9 @@ class QueryEngineConfigTest {
             .appendSystemPrompt("append prompt")
             .userSpecifiedModel("claude-opus-4-6")
             .fallbackModel("claude-sonnet-4-6")
+            .apiKey("test-key")
+            .model("glm-5")
+            .systemPrompt("system prompt")
             .maxTurns(10)
             .maxBudgetUsd(5.0)
             .verbose(true)
@@ -62,7 +65,7 @@ class QueryEngineConfigTest {
             .build();
 
         assertEquals("/custom", config.cwd());
-        assertEquals(1, config.tools().size());
+        assertTrue(config.tools().isEmpty());
         assertEquals(1, config.commands().size());
         assertEquals(1, config.mcpClients().size());
         assertEquals(1, config.agents().size());
@@ -70,6 +73,9 @@ class QueryEngineConfigTest {
         assertEquals("append prompt", config.appendSystemPrompt());
         assertEquals("claude-opus-4-6", config.userSpecifiedModel());
         assertEquals("claude-sonnet-4-6", config.fallbackModel());
+        assertEquals("test-key", config.apiKey());
+        assertEquals("glm-5", config.model());
+        assertEquals("system prompt", config.systemPrompt());
         assertEquals(10, config.maxTurns());
         assertEquals(5.0, config.maxBudgetUsd());
         assertTrue(config.verbose());
@@ -79,49 +85,8 @@ class QueryEngineConfigTest {
     }
 
     @Test
-    @DisplayName("QueryEngineConfig record accessors work correctly")
-    void recordAccessorsWorkCorrectly() {
-        QueryEngineConfig config = new QueryEngineConfig(
-            "/test",
-            List.of("tool"),
-            List.of("cmd"),
-            List.of("mcp"),
-            List.of("agent"),
-            null,
-            List.of("msg"),
-            null,
-            "custom",
-            "append",
-            "opus",
-            "sonnet",
-            null,
-            5,
-            1.0,
-            null,
-            null,
-            true,
-            false,
-            true,
-            PermissionMode.BYPASS_PERMISSIONS,
-            null,
-            null,
-            null
-        );
-
-        assertEquals("/test", config.cwd());
-        assertEquals(1, config.tools().size());
-        assertEquals("custom", config.customSystemPrompt());
-        assertEquals("opus", config.userSpecifiedModel());
-        assertEquals(5, config.maxTurns());
-        assertEquals(1.0, config.maxBudgetUsd());
-        assertTrue(config.verbose());
-        assertTrue(config.isNonInteractiveSession());
-        assertEquals(PermissionMode.BYPASS_PERMISSIONS, config.permissionMode());
-    }
-
-    @Test
-    @DisplayName("QueryEngineConfig builder canUseTool default allows all")
-    void builderCanUseToolDefaultAllowsAll() {
+    @DisplayName("QueryEngineConfig canUseTool default allows all")
+    void canUseToolDefaultAllowsAll() {
         QueryEngineConfig config = QueryEngineConfig.builder().build();
 
         // Default canUseTool should allow all
@@ -134,8 +99,8 @@ class QueryEngineConfigTest {
     }
 
     @Test
-    @DisplayName("QueryEngineConfig builder cwd defaults to user.dir")
-    void builderCwdDefaultsToUserDir() {
+    @DisplayName("QueryEngineConfig cwd defaults to user.dir")
+    void cwdDefaultsToUserDir() {
         QueryEngineConfig config = QueryEngineConfig.builder().build();
 
         assertEquals(System.getProperty("user.dir"), config.cwd());
@@ -156,5 +121,13 @@ class QueryEngineConfigTest {
 
         assertEquals("/first", config1.cwd());
         assertEquals("/second", config2.cwd());
+    }
+
+    @Test
+    @DisplayName("QueryEngineConfig model defaults to glm-5")
+    void modelDefaultsToGlm5() {
+        QueryEngineConfig config = QueryEngineConfig.builder().build();
+
+        assertEquals("glm-5", config.model());
     }
 }

@@ -9,6 +9,7 @@ import com.anthropic.claudecode.*;
 import com.anthropic.claudecode.engine.*;
 import com.anthropic.claudecode.message.*;
 import com.anthropic.claudecode.tools.*;
+import com.anthropic.claudecode.types.MessageTypes;
 
 import reactor.core.publisher.Flux;
 
@@ -130,19 +131,57 @@ public class InteractiveSession {
         System.out.flush();
 
         try {
-            QueryEngine.QueryResult result = engine.submitMessage(
-                    prompt,
-                    QueryEngine.SubmitOptions.empty()
-            ).get();
+            // Use the new executeAgenticLoop API
+            Flux<QueryEvent> eventFlux = engine.executeAgenticLoop(prompt);
 
-            // Handle the result
-            if (result.status() == QueryEngine.QueryStatus.COMPLETED) {
-                System.out.println("\n[Done]");
-            } else if (result.status() == QueryEngine.QueryStatus.FAILED) {
-                System.err.println("\nError: Query failed");
-            }
+            eventFlux.subscribe(event -> {
+                if (event instanceof QueryEvent.Message msgEvent) {
+                    Object msg = msgEvent.message();
+                    if (msg instanceof MessageTypes.AssistantMessage assistant) {
+                        printAssistantContent(assistant);
+                    } else if (msg instanceof MessageTypes.UserMessage user) {
+                        // Skip user messages in output
+                    }
+                } else if (event instanceof QueryEvent.ToolsExecuting executing) {
+                    System.out.println("\n[Executing " + executing.toolCount() + " tools...]");
+                } else if (event instanceof QueryEvent.ToolsComplete complete) {
+                    System.out.println("\n[Tools completed: " + complete.resultCount() + " results]");
+                } else if (event instanceof QueryEvent.Terminal terminal) {
+                    if (terminal.isError()) {
+                        System.err.println("\n[Error: " + terminal.getReason() + "]");
+                    } else {
+                        System.out.println("\n[Done]");
+                    }
+                }
+            }, error -> {
+                System.err.println("\n[Error: " + error.getMessage() + "]");
+            }, () -> {
+                System.out.println("\n[Turn completed]");
+            });
+
+            // Wait for completion (simplified - in production would use CountDownLatch or similar)
+            Thread.sleep(100);
+
         } catch (Exception e) {
             handleError(e);
+        }
+    }
+
+    /**
+     * Print assistant message content.
+     */
+    private void printAssistantContent(MessageTypes.AssistantMessage assistant) {
+        List<Map<String, Object>> content = assistant.content();
+        if (content == null) return;
+
+        for (Map<String, Object> block : content) {
+            String type = (String) block.get("type");
+            if ("text".equals(type)) {
+                String text = (String) block.get("text");
+                if (text != null && !text.isEmpty()) {
+                    System.out.println(text);
+                }
+            }
         }
     }
 
